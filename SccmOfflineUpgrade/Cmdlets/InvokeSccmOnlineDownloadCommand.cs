@@ -1,33 +1,42 @@
-﻿using System;
+﻿// File: Cmdlets/InvokeSccmOnlineDownloadCommand.cs
+// Namespace: SccmOfflineUpgrade
+//
+// Features:
+// - Uses ServiceConnectionTool from the input ZIP (no external path needed)
+// - Normalizes CAB name to "UsageData.cab"
+// - Optional ODBC 18 packaging (IncludeOdbc18) and ensure-install (EnsureOdbc18)
+// - Progress bar (Write-Progress) with both stdout parsing and folder-size estimation
+// - Per-file completion logging
+// - Suppresses any interactive dialogs (MessageBox, OS error boxes)
+// - Continues best-effort; writes error details to log; validates non-empty download
+//
+// Requirements: Logger, FileUtils, OdbcChecker, Native, DownloadProgress helpers must exist in the project.
+
+using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Management.Automation;
-using System.Text.RegularExpressions;
+using System.Net;
 using System.Threading;
 
 namespace SccmOfflineUpgrade
 {
-    public class OnlineDownloadResult
-    {
-        public string OutputZip { get; set; } = string.Empty;
-        public string? ErrorLog { get; set; }
-    }
-
     [Cmdlet(VerbsLifecycle.Invoke, "SccmOnlineDownload")]
     [OutputType(typeof(OnlineDownloadResult))]
     public class InvokeSccmOnlineDownloadCommand : PSCmdlet
     {
         [Parameter(Mandatory = true)]
+        [ValidateNotNullOrEmpty]
         public string InputZip { get; set; } = string.Empty;
 
         [Parameter(Mandatory = true)]
+        [ValidateNotNullOrEmpty]
         public string DownloadOutput { get; set; } = string.Empty;
 
         [Parameter(Mandatory = true)]
+        [ValidateNotNullOrEmpty]
         public string OutputZip { get; set; } = string.Empty;
-
-        [Parameter]
-        public string Proxy { get; set; } = string.Empty;
 
         [Parameter]
         public string LogPath { get; set; } = @"C:\ProgramData\SccmOfflineUpgrade\logs\Invoke-SccmOnlineDownload.log";
@@ -35,104 +44,165 @@ namespace SccmOfflineUpgrade
         [Parameter]
         public string ErrorLogPath { get; set; } = @"C:\ProgramData\SccmOfflineUpgrade\logs\OnlineDownloadErrors.log";
 
-        // --- Regex kalıpları (stdout/err için)
-        private static readonly Regex RxFileOfTotal = new(@"Downloading\s+file\s+(?<cur>\d+)\s+of\s+(?<tot>\d+)",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        /// <summary>
+        /// Download sırasında ODBC 18 MSI'sini pakete Prereqs\ODBC18 altına ekler.
+        /// </summary>
+        [Parameter]
+        public SwitchParameter IncludeOdbc18 { get; set; }
 
-        private static readonly Regex RxBytesOfTotal = new(@"(?<done>\d+(?:\.\d+)?)\s*(MB|GB)\s+of\s+(?<tot>\d+(?:\.\d+)?)\s*(MB|GB)",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        /// <summary>
+        /// Online makinede ODBC 18 kurulu değilse indirip sessiz kurar (önerilir).
+        /// </summary>
+        [Parameter]
+        public SwitchParameter EnsureOdbc18 { get; set; } = true;
 
-        private static long ToBytes(double value, string unit)
-        {
-            unit = unit.ToUpperInvariant();
-            if (unit == "GB") return (long)(value * 1024 * 1024 * 1024);
-            return (long)(value * 1024 * 1024); // MB
-        }
+        /// <summary>
+        /// Gerekirse proxy (örn. http://user:pass@proxy:8080).
+        /// </summary>
+        [Parameter]
+        public string? Proxy { get; set; }
 
         protected override void ProcessRecord()
         {
-            Logger.Write(LogPath, $"Invoke-SccmOnlineDownload starting: {InputZip} -> {DownloadOutput}");
-            string? work = null;
-            string? errorLogOut = null;
+            Logger.Write(LogPath, $"Invoke-SccmOnlineDownload starting. InputZip='{InputZip}'  Output='{DownloadOutput}'  Package='{OutputZip}'");
+            Native.SuppressWindowsErrorDialogs(); // OS error UI'larını bastır
 
+            string? workDir = null;
             var progress = new DownloadProgress();
             var pr = new ProgressRecord(1, "Downloading ConfigMgr updates", "Starting...");
 
             try
             {
+                // --- Hazırlık
                 if (!File.Exists(InputZip))
                     throw new FileNotFoundException("InputZip not found", InputZip);
 
-                work = Path.Combine(Path.GetTempPath(), "SOT-" + Guid.NewGuid().ToString("N"));
-                FileUtils.Unzip(InputZip, work);
-
-                var tool = Path.Combine(work, "ServiceConnectionTool");
-                var xfer = Path.Combine(work, "Transfer");
-                var exe = Path.Combine(tool, "ServiceConnectionTool.exe");
-                if (!File.Exists(exe))
-                    throw new FileNotFoundException("ServiceConnectionTool.exe not found in package", exe);
-
+                if (Directory.Exists(DownloadOutput))
+                {
+                    Logger.Write(LogPath, "Cleaning existing DownloadOutput...");
+                    FileUtils.SafeDeleteDirectory(DownloadOutput);
+                }
                 Directory.CreateDirectory(DownloadOutput);
 
-                var args = $"-connect -usagedatasrc \"{xfer}\" -updatepackdest \"{DownloadOutput}\"";
+                workDir = Path.Combine(Path.GetTempPath(), "SccmOnline_" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(workDir);
+
+                Logger.Write(LogPath, $"Extract input zip -> {workDir}");
+                FileUtils.Unzip(InputZip, workDir); // Projende mevcut helper (aksi halde ZipFile.ExtractToDirectory(InputZip, workDir))
+
+                // ServiceConnectionTool'ü paketten bul
+                var toolDir = Directory.EnumerateDirectories(workDir, "ServiceConnectionTool", SearchOption.AllDirectories).FirstOrDefault();
+                if (string.IsNullOrEmpty(toolDir))
+                    throw new DirectoryNotFoundException("ServiceConnectionTool folder not found in the input package.");
+
+                var toolExe = Path.Combine(toolDir, "ServiceConnectionTool.exe");
+                if (!File.Exists(toolExe))
+                    throw new FileNotFoundException("ServiceConnectionTool.exe not found in the package.", toolExe);
+
+                var xferDir = Path.Combine(workDir, "Transfer");
+                if (!Directory.Exists(xferDir))
+                    throw new DirectoryNotFoundException("Transfer folder not found in the input package.");
+
+                // UsageData.cab adı normalize et (araç çoğu sürümde bu adı bekler)
+                var cabs = Directory.EnumerateFiles(xferDir, "*.cab", SearchOption.TopDirectoryOnly).ToList();
+                if (cabs.Count == 0)
+                    throw new FileNotFoundException("No CAB file found in Transfer folder (UsageData.cab expected).");
+
+                var expectedCab = Path.Combine(xferDir, "UsageData.cab");
+                if (!cabs.Any(f => f.EndsWith("UsageData.cab", StringComparison.OrdinalIgnoreCase)))
+                {
+                    File.Copy(cabs[0], expectedCab, true);
+                    Logger.Write(LogPath, $"Renamed CAB to UsageData.cab (from {Path.GetFileName(cabs[0])}).");
+                }
+
+                // (Opsiyonel) ODBC 18 MSI'ini pakete ekle
+                if (IncludeOdbc18.IsPresent)
+                {
+                    TryAddOdbcMsiToPackage(Proxy, Path.Combine(DownloadOutput, "Prereqs", "ODBC18"));
+                }
+
+                // (Önerilen) ODBC 18 kurulu değilse indir + sessiz kur
+                if (EnsureOdbc18.IsPresent && !OdbcChecker.IsOdbc18Installed())
+                {
+                    EnsureOdbcInstalled(Proxy, Path.Combine(DownloadOutput, "Prereqs", "ODBC18"));
+                }
+
+                // --- ServiceConnectionTool -connect
+                var args = $"-connect -usagedatasrc \"{xferDir}\" -updatepackdest \"{DownloadOutput}\"";
                 if (!string.IsNullOrWhiteSpace(Proxy))
                     args += $" -proxy \"{Proxy}\"";
 
-                Logger.Write(LogPath, "Running ServiceConnectionTool -connect ...");
-
-                // --- Süreci manuel yönet: stdout/err satırlarını canlı yakala; MessageBox yok, pencere yok.
-                var psi = new System.Diagnostics.ProcessStartInfo
+                Logger.Write(LogPath, $"Run: {toolExe} {args}");
+                var psi = new ProcessStartInfo
                 {
-                    FileName = exe,
+                    FileName = toolExe,
                     Arguments = args,
+                    UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
-                    UseShellExecute = false,
+                    RedirectStandardInput = true,
                     CreateNoWindow = true,
-                    WorkingDirectory = tool
+                    ErrorDialog = false,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    WorkingDirectory = toolDir
                 };
-                var p = new System.Diagnostics.Process { StartInfo = psi, EnableRaisingEvents = true };
 
-                p.OutputDataReceived += (s, e) =>
+                using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+
+                proc.OutputDataReceived += (s, e) =>
                 {
                     if (e.Data == null) return;
                     Logger.Write(LogPath, e.Data, LogLevel.DEBUG);
-                    TryParseProgressFromLine(e.Data, progress);
+
+                    // stdout'tan yüzdelik yakalamaya çalış
+                    var pct = progress.ParsePercent(e.Data);
+                    if (pct.HasValue)
+                    {
+                        pr.StatusDescription = e.Data;
+                        pr.PercentComplete = Math.Min(100, Math.Max(0, pct.Value));
+                        WriteProgress(pr);
+                    }
                 };
-                p.ErrorDataReceived += (s, e) =>
+                proc.ErrorDataReceived += (s, e) =>
                 {
                     if (e.Data == null) return;
                     Logger.Write(LogPath, e.Data, LogLevel.WARN);
-                    TryParseProgressFromLine(e.Data, progress);
+                    // Hatalar da ilerleme ipucu içerebilir
+                    var pct = progress.ParsePercent(e.Data);
+                    if (pct.HasValue)
+                    {
+                        pr.StatusDescription = e.Data;
+                        pr.PercentComplete = Math.Min(100, Math.Max(0, pct.Value));
+                        WriteProgress(pr);
+                    }
                 };
 
-                // --- İlerleme & dosya tamamlama izleme döngüsü
-                p.Start();
-                p.BeginOutputReadLine();
-                p.BeginErrorReadLine();
+                proc.Start();
+                proc.BeginOutputReadLine();
+                proc.BeginErrorReadLine();
 
+                // İlerlemeyi klasör taramasıyla da güncelle (500ms)
                 var lastProgressUpdate = DateTime.MinValue;
-
-                while (!p.HasExited)
+                while (!proc.HasExited)
                 {
-                    // Klasörü tara, tamamlanan dosyaları logla
                     progress.ScanFolderAndUpdate(DownloadOutput, (file, size) =>
                     {
                         Logger.Write(LogPath, $"[FILE] Completed: {file} ({size} bytes)");
                     });
 
-                    // Yüzdeyi güncelle
-                    var percent = progress.GetPercent(); // -1 ise bilinmiyor
-                    var status = $"Downloaded: {FormatBytes(progress.CurrentBytes)}";
-                    if (progress.ExpectedTotalBytes.HasValue)
-                        status += $" / {FormatBytes(progress.ExpectedTotalBytes.Value)}";
-                    status += $" | Completed files: {progress.CompletedFilesCount}";
-
-                    // Çok sık yazmasın
+                    var est = progress.GetPercent();
                     if ((DateTime.Now - lastProgressUpdate).TotalMilliseconds > 500)
                     {
-                        pr.StatusDescription = status;
-                        pr.PercentComplete = percent >= 0 ? percent : 0; // bilinmiyorsa 0 göster
+                        if (est >= 0)
+                        {
+                            pr.StatusDescription = $"Downloaded {FormatBytes(progress.CurrentBytes)} of ~{FormatBytes(progress.ExpectedTotalBytes ?? 0)}";
+                            pr.PercentComplete = est;
+                        }
+                        else
+                        {
+                            pr.StatusDescription = $"Downloaded {FormatBytes(progress.CurrentBytes)}";
+                            pr.PercentComplete = 0;
+                        }
                         WriteProgress(pr);
                         lastProgressUpdate = DateTime.Now;
                     }
@@ -140,101 +210,150 @@ namespace SccmOfflineUpgrade
                     Thread.Sleep(500);
                 }
 
-                // Çıkıştan sonra son bir tarama + progress 100
+                // Son defa tarayıp %100 yap
                 progress.ScanFolderAndUpdate(DownloadOutput, (file, size) =>
                 {
                     Logger.Write(LogPath, $"[FILE] Completed: {file} ({size} bytes)");
                 });
-                pr.StatusDescription = $"Finalizing... Downloaded: {FormatBytes(progress.CurrentBytes)}";
+                pr.StatusDescription = $"Finalizing... Downloaded {FormatBytes(progress.CurrentBytes)}";
                 pr.PercentComplete = 100;
                 WriteProgress(pr);
 
-                // Heuristik hata tespiti (önceki sürümde olduğu gibi)
-                var combined = File.ReadAllLines(LogPath); // satır içinden error/fail ara
-                var errorLines = combined.Where(l =>
-                    l.IndexOf("fail", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    l.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    l.IndexOf("denied", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    l.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    l.IndexOf("unavailable", StringComparison.OrdinalIgnoreCase) >= 0
-                ).ToList();
+                Logger.Write(LogPath, $"ServiceConnectionTool exit code: {proc.ExitCode}");
 
-                foreach (var file in Directory.EnumerateFiles(DownloadOutput, "*", SearchOption.AllDirectories))
+                // Başarı kriteri: en az birkaç MB veya bilinen klasörler
+                var hasUpdates = Directory.Exists(Path.Combine(DownloadOutput, "Updates"));
+                var hasRedist = Directory.Exists(Path.Combine(DownloadOutput, "Redist"));
+                if (progress.CurrentBytes < 5L * 1024 * 1024 && !hasUpdates && !hasRedist)
                 {
-                    var info = new FileInfo(file);
-                    if (info.Length == 0)
-                        errorLines.Add($"Zero-length file: {file}");
+                    Logger.Write(LogPath, "No downloaded content detected (size < 5MB and no Updates/Redist).", LogLevel.ERROR);
                 }
 
-                if (errorLines.Count > 0)
+                // Hata satırlarını çıkar (heuristic)
+                try
                 {
-                    Directory.CreateDirectory(Path.GetDirectoryName(ErrorLogPath) ?? ".");
-                    File.WriteAllLines(ErrorLogPath, errorLines);
-                    Logger.Write(LogPath, $"Download issues detected: {errorLines.Count}. Details: {ErrorLogPath}", LogLevel.WARN);
-                    errorLogOut = ErrorLogPath;
+                    var lines = File.ReadAllLines(LogPath);
+                    var errs = lines.Where(l =>
+                        l.IndexOf("fail", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        l.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        l.IndexOf("denied", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        l.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        l.IndexOf("unavailable", StringComparison.OrdinalIgnoreCase) >= 0
+                    ).ToList();
+
+                    foreach (var f in Directory.EnumerateFiles(DownloadOutput, "*", SearchOption.AllDirectories))
+                    {
+                        var info = new FileInfo(f);
+                        if (info.Length == 0) errs.Add($"Zero-length file: {f}");
+                    }
+
+                    if (errs.Count > 0)
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(ErrorLogPath) ?? ".");
+                        File.WriteAllLines(ErrorLogPath, errs);
+                        Logger.Write(LogPath, $"Download issues detected: {errs.Count}. See: {ErrorLogPath}", LogLevel.WARN);
+                    }
+                }
+                catch (Exception exErr)
+                {
+                    Logger.Write(LogPath, $"Error while generating error log: {exErr.Message}", LogLevel.WARN);
                 }
 
-                // Not: p.ExitCode != 0 olsa bile İSTEYEREK devam ediyoruz (paketlemeyi deneriz)
+                // DownloadOutput'u zip'le
                 if (File.Exists(OutputZip)) File.Delete(OutputZip);
-                Logger.Write(LogPath, $"Compressing downloads -> {OutputZip}");
+                Logger.Write(LogPath, $"Compressing download folder -> {OutputZip}");
                 FileUtils.ZipDirectory(DownloadOutput, OutputZip);
 
-                var dto = new OnlineDownloadResult { OutputZip = OutputZip, ErrorLog = errorLogOut };
-                WriteObject(dto);
-                Logger.Write(LogPath, "Online download completed.");
+                // Sonuç döndür
+                var result = new OnlineDownloadResult
+                {
+                    OutputZip = OutputZip,
+                    ErrorLog = File.Exists(ErrorLogPath) ? ErrorLogPath : null
+                };
+                WriteObject(result);
+                Logger.Write(LogPath, "Invoke-SccmOnlineDownload completed.");
             }
             catch (Exception ex)
             {
-                // Hatalarda MessageBox kesinlikle yok; sadece log ve PowerShell error stream.
-                Logger.Write(LogPath, $"ERROR: {ex.Message}", LogLevel.ERROR);
-                // Devam etmeyi istiyorsanız, burada ThrowTerminatingError atmayın.
-                // Ancak cmdlet semantiği gereği çağırana hata dönmek istenirse aşağıyı açın:
-                // ThrowTerminatingError(new ErrorRecord(ex, "OnlineDownloadFailed", ErrorCategory.NotSpecified, this));
+                Logger.Write(LogPath, $"Invoke-SccmOnlineDownload failed: {ex.Message}", LogLevel.ERROR);
+                ThrowTerminatingError(new ErrorRecord(ex, "InvokeFailed", ErrorCategory.NotSpecified, this));
             }
             finally
             {
-                if (!string.IsNullOrEmpty(work))
+                // Progress’i kapat
+                var close = new ProgressRecord(1, "Downloading ConfigMgr updates", "Done.")
                 {
-                    try { FileUtils.SafeDeleteDirectory(work); } catch { }
-                }
-
-                // Progress kaydını kapat
-                var close = new ProgressRecord(1, "Downloading ConfigMgr updates", "Done.") { RecordType = ProgressRecordType.Completed };
+                    RecordType = ProgressRecordType.Completed
+                };
                 WriteProgress(close);
+
+                // Geçici klasörü temizle
+                if (!string.IsNullOrEmpty(workDir))
+                {
+                    try { FileUtils.SafeDeleteDirectory(workDir); } catch { /* ignore */ }
+                }
             }
         }
 
-        private void TryParseProgressFromLine(string line, DownloadProgress progress)
+        private void TryAddOdbcMsiToPackage(string? proxy, string targetFolder)
         {
             try
             {
-                // 1) "Downloading file X of Y"
-                var m1 = RxFileOfTotal.Match(line);
-                if (m1.Success)
+                Directory.CreateDirectory(targetFolder);
+                var outPath = Path.Combine(targetFolder, "msodbcsql18.msi");
+                Logger.Write(LogPath, $"Downloading ODBC 18 MSI -> {outPath}");
+
+                using var wc = new WebClient();
+                if (!string.IsNullOrWhiteSpace(proxy))
+                    wc.Proxy = new WebProxy(proxy);
+
+                wc.DownloadFile("https://go.microsoft.com/fwlink/?linkid=2220989", outPath);
+
+                var fi = new FileInfo(outPath);
+                if (!fi.Exists || fi.Length < 100 * 1024)
+                    Logger.Write(LogPath, $"Downloaded ODBC MSI seems too small: {fi.Length} bytes", LogLevel.WARN);
+                else
+                    Logger.Write(LogPath, "ODBC 18 MSI added to package.");
+            }
+            catch (Exception ex)
+            {
+                Logger.Write(LogPath, $"Could not download ODBC 18 MSI: {ex.Message}", LogLevel.WARN);
+            }
+        }
+
+        private void EnsureOdbcInstalled(string? proxy, string stagingFolder)
+        {
+            try
+            {
+                if (OdbcChecker.IsOdbc18Installed())
                 {
-                    var cur = int.Parse(m1.Groups["cur"].Value);
-                    var tot = int.Parse(m1.Groups["tot"].Value);
-                    if (tot > 0)
-                    {
-                        // dosya adedinden yüzde (yaklaşık) -> CurrentBytes bilgisi yine klasör taramasından gelecek
-                        // Burada bir şey set etmeye gerek yok; Write-Progress yüzdesini ExpectedTotalBytes varsa tercih ediyoruz.
-                    }
+                    Logger.Write(LogPath, "ODBC 18 already installed.");
+                    return;
                 }
 
-                // 2) "A MB of B MB" veya "A GB of B GB"
-                var m2 = RxBytesOfTotal.Match(line);
-                if (m2.Success)
+                Directory.CreateDirectory(stagingFolder);
+                var msiPath = Path.Combine(stagingFolder, "msodbcsql18.msi");
+
+                Logger.Write(LogPath, $"ODBC 18 not found. Downloading to {msiPath}");
+                using (var wc = new WebClient())
                 {
-                    var done = double.Parse(m2.Groups["done"].Value.Replace(',', '.'));
-                    var tot = double.Parse(m2.Groups["tot"].Value.Replace(',', '.'));
-                    var unit = m2.Groups[2].Value; // ilk yakalanan birim
-                    var totalBytes = ToBytes(tot, unit);
-                    if (totalBytes > 0) progress.ExpectedTotalBytes = totalBytes;
+                    if (!string.IsNullOrWhiteSpace(proxy))
+                        wc.Proxy = new WebProxy(proxy);
+
+                    wc.DownloadFile("https://go.microsoft.com/fwlink/?linkid=2220989", msiPath);
                 }
+
+                Logger.Write(LogPath, "Installing ODBC 18 silently...");
+                OdbcChecker.InstallOdbc18Msi(msiPath, LogPath);
+
+                if (OdbcChecker.IsOdbc18Installed())
+                    Logger.Write(LogPath, "ODBC 18 installation verified.");
+                else
+                    Logger.Write(LogPath, "ODBC 18 install check failed after MSI.", LogLevel.WARN);
             }
-            catch
+            catch (Exception ex)
             {
-                // parse hatalarını yok say
+                Logger.Write(LogPath, $"EnsureOdbcInstalled failed: {ex.Message}", LogLevel.WARN);
             }
         }
 
@@ -248,5 +367,11 @@ namespace SccmOfflineUpgrade
                 return $"{bytes / 1024d:0} KB";
             return $"{bytes} B";
         }
+    }
+
+    public sealed class OnlineDownloadResult
+    {
+        public string OutputZip { get; set; } = string.Empty;
+        public string? ErrorLog { get; set; }
     }
 }

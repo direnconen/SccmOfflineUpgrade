@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.RegularExpressions;
 
 namespace SccmOfflineUpgrade
 {
@@ -13,20 +14,18 @@ namespace SccmOfflineUpgrade
             public int StableCount;
         }
 
-        // Tahmini toplam byte (stdout'tan parse edersek dolar)
-        public long? ExpectedTotalBytes { get; set; }
+        // stdout'tan "A MB of B MB" gibi kalıpları yakalamak için
+        private static readonly Regex RxPercent = new(@"(?<!\d)(?<p>\d{1,3})\s?%(?!\d)", RegexOptions.Compiled);
+        private static readonly Regex RxBytesOfTotal =
+            new(@"(?<done>\d+(?:\.\d+)?)\s*(MB|GB)\s+of\s+(?<tot>\d+(?:\.\d+)?)\s*(MB|GB)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-        // Şu ana kadar tespit edilen toplam byte (klasör taramasından)
+        public long? ExpectedTotalBytes { get; set; }
         public long CurrentBytes { get; private set; }
 
-        // Tamamlanan dosyalar (loglandı)
         private readonly HashSet<string> _completedLogged = new(StringComparer.OrdinalIgnoreCase);
-
-        // Stabilite takibi: path -> StabilityInfo
         private readonly ConcurrentDictionary<string, StabilityInfo> _stability =
             new(StringComparer.OrdinalIgnoreCase);
 
-        // Tamamlandı sayacı
         public int CompletedFilesCount => _completedLogged.Count;
 
         public void ScanFolderAndUpdate(string rootFolder, Action<string, long> onFileCompleted)
@@ -44,10 +43,7 @@ namespace SccmOfflineUpgrade
 
                     if (info.LastSize == fi.Length)
                     {
-                        // boyut değişmedi: stabil sayaç ++
                         info.StableCount = Math.Min(info.StableCount + 1, 10);
-
-                        // 2 ardışık ölçüm stabil ise ve daha önce loglanmadıysa -> tamamlandı
                         if (info.StableCount >= 2 && !_completedLogged.Contains(fi.FullName))
                         {
                             _completedLogged.Add(fi.FullName);
@@ -56,15 +52,11 @@ namespace SccmOfflineUpgrade
                     }
                     else
                     {
-                        // boyut değişti: sayaç sıfırla
                         info.LastSize = fi.Length;
                         info.StableCount = 0;
                     }
                 }
-                catch
-                {
-                    // erişim hataları vs. yok say
-                }
+                catch { /* ignore */ }
             }
 
             CurrentBytes = sum;
@@ -75,10 +67,39 @@ namespace SccmOfflineUpgrade
             if (ExpectedTotalBytes.HasValue && ExpectedTotalBytes.Value > 0)
             {
                 var p = (int)Math.Floor((CurrentBytes * 100.0) / ExpectedTotalBytes.Value);
-                return Math.Max(0, Math.Min(99, p)); // işlem bitene kadar 99'u geçme
+                return Math.Max(0, Math.Min(99, p)); // süreç bitene kadar 100 yapmayalım
             }
-            // Beklenen toplam bilinmiyorsa yüzdesiz; 0 döndür (indeterminate gibi davranacağız)
-            return -1;
+            return -1; // bilinmiyor
+        }
+
+        /// <summary>
+        /// Bir log satırından yüzde tahmini çıkarır. Bulursa 0..100 arası değer döndürür; bulamazsa null.
+        /// "NN%" kalıbını ya da "A MB of B MB|GB" kalıbını destekler.
+        /// </summary>
+        public int? ParsePercent(string line)
+        {
+            if (string.IsNullOrEmpty(line)) return null;
+
+            // Doğrudan yüzde
+            var m = RxPercent.Match(line);
+            if (m.Success && int.TryParse(m.Groups["p"].Value, out var pct))
+            {
+                return Math.Max(0, Math.Min(100, pct));
+            }
+
+            // A MB of B MB/GB -> ExpectedTotalBytes set et
+            var b = RxBytesOfTotal.Match(line);
+            if (b.Success)
+            {
+                double tot = double.Parse(b.Groups["tot"].Value.Replace(',', '.'));
+                var unit = b.Groups[2].Value.ToUpperInvariant(); // MB|GB (done için ilk grup, tot için ikinci grup; ikisi de aynı birim kabul)
+                long totalBytes = unit == "GB" ? (long)(tot * 1024 * 1024 * 1024) : (long)(tot * 1024 * 1024);
+                if (totalBytes > 0) ExpectedTotalBytes = totalBytes;
+
+                // Yüzdeyi CurrentBytes üzerinden hesaplayacağız; burada direkt döndürmeyelim.
+            }
+
+            return null;
         }
     }
 }

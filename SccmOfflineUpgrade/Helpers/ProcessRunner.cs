@@ -15,14 +15,20 @@ namespace SccmOfflineUpgrade
     {
         public static ProcessResult Run(string filePath, string arguments, int timeoutSeconds = 0, string? workingDirectory = null)
         {
+            // NEW: Suppress Windows error dialogs for this process (and children).
+            Native.SuppressWindowsErrorDialogs();
+
             var psi = new ProcessStartInfo
             {
                 FileName = filePath,
                 Arguments = arguments,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                RedirectStandardInput = true,          // NEW: no interactive prompts
                 UseShellExecute = false,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                ErrorDialog = false,                   // NEW
+                WindowStyle = ProcessWindowStyle.Hidden
             };
             if (!string.IsNullOrWhiteSpace(workingDirectory))
                 psi.WorkingDirectory = workingDirectory;
