@@ -60,6 +60,7 @@
     <Compile Include="Cmdlets\ImportSccmOfflineUpdatesCommand.cs" />
     <Compile Include="Cmdlets\InstallSccmServiceConnectionPointCommand.cs" />
     <Compile Include="Cmdlets\InvokeSccmOnlineDownloadCommand.cs" />
+    <Compile Include="Helpers\DownloadProgress.cs" />
     <Compile Include="Helpers\FileUtils.cs" />
     <Compile Include="Helpers\Logger.cs" />
     <Compile Include="Helpers\ProcessRunner.cs" />

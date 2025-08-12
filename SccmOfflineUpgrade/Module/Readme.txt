@@ -1,265 +1,327 @@
 ﻿SccmOfflineUpgrade v1.0.0
 ================================
 
-Yazar            : Arksoft Bilisim
-Modül            : SccmOfflineUpgrade.psm1
-Açıklama         : Kapalı ağ (offline) SCCM/ConfigMgr ortamları için uçtan uca "Prepare → Connect → Import" akışıyla 
-                   yükseltme (in-console update) paketlerini hazırlama, indirme ve içeri alma işlemlerini otomatikleştirir.
-Hedef Kitle      : SCCM yöneticileri ve DevOps ekipleri
-Lisans           : Internal
+Author : Arksoft Bilisim
+Module : SccmOfflineUpgrade.psm1
+Description : Automates the end-to-end "Prepare → Connect → Import" process for upgrading (in-console update) packages in offline (air-gapped) SCCM/ConfigMgr environments.
+Target Audience : SCCM Administrators and DevOps Teams
+License : Internal
 
---------------------------------------------------------------------------------
-İÇİNDEKİLER
---------------------------------------------------------------------------------
-1) Genel Bakış
-2) Önkoşullar
-3) Kurulum ve Modülün Yüklenmesi
-4) Komutlar (Cmdlet’ler) ve Parametreleri
-   4.1) Install-SccmServiceConnectionPoint
-   4.2) Export-SccmOfflinePackage
-   4.3) Invoke-SccmOnlineDownload
-   4.4) Import-SccmOfflineUpdates
-5) Kullanım Senaryoları (Uçtan Uca Akış)
-   5.1) Kapalı Ağ: Prepare & Paket Üret
-   5.2) Açık Ağ: Connect & İndir & Paketle
-   5.3) Kapalı Ağ: Import & (Opsiyonel) Prereq Check & (Opsiyonel) Upgrade Başlat
-6) Loglama ve Çıktılar
-7) Hata Yönetimi ve Sorun Giderme
-8) SSS (Sık Sorulan Sorular)
-9) Sürüm Notları
+CONTENTS
+Overview
 
---------------------------------------------------------------------------------
-1) GENEL BAKIŞ
---------------------------------------------------------------------------------
-Bu modül, Microsoft Configuration Manager (SCCM/ConfigMgr) ortamlarında internet erişimi olmayan (kapalı ağ) 
-site’leri güncel sürümlere yükseltmek için kullanılan offline yöntemi otomatikleştirir. Akış:
-  - PREPARE  : Kapalı ağdaki SCCM sunucusunda usage data üretilir ve transfer paketi hazırlanır.
-  - CONNECT  : Açık ağda usage data Microsoft’a gönderilir ve update paketleri indirilir.
-  - IMPORT   : Kapalı ağda indirilen paketler SCCM’e import edilir; istenirse prereq check ve upgrade tetiklenir.
+Prerequisites
 
-Modül ayrıca:
-  - Service Connection Point (SCP) rolünü kurabilir ve Offline/Online moda alabilir.
-  - Tüm adımları ayrıntılı loglar.
-  - İndirme sırasında hataya düşen dosyaları ayrı bir log dosyasına yazar.
-  - Transfer/indirme paketlerini otomatik ZIP’ler.
+Installation and Module Loading
 
---------------------------------------------------------------------------------
-2) ÖNKOŞULLAR
---------------------------------------------------------------------------------
-- SCCM Konsolu ve/veya ConfigMgr PowerShell modülü (ConfigMgr cmdlet’leri için).
-- ServiceConnectionTool.exe (aynı sürümün CD.Latest dizininden). Modül otomatik bulmaya çalışır.
-- Kapalı ağ tarafında yönetici yetkileri.
-- Açık ağ tarafında internet erişimi; gerekiyorsa proxy bilgisi.
-- .NET Framework ve gerekli bağımlılıklar (ServiceConnectionTool’un gerektirdikleri).
-- Yeterli disk alanı (indirilecek güncellemeler GB’larca olabilir).
+Commands (Cmdlets) and Parameters
+ 4.1) Install-SccmServiceConnectionPoint
+ 4.2) Export-SccmOfflinePackage
+ 4.3) Invoke-SccmOnlineDownload
+ 4.4) Import-SccmOfflineUpdates
 
---------------------------------------------------------------------------------
-3) KURULUM VE MODÜLÜN YÜKLENMESİ
---------------------------------------------------------------------------------
-1. Modül dosyalarını bir klasöre kopyalayın (örn. C:\Modules\SccmOfflineUpgrade\).
-2. (İsteğe bağlı) Modül manifest dosyası (SccmOfflineUpgrade.psd1) kullanıyorsanız aynı klasöre koyun.
-3. PowerShell’de:
-   Import-Module "C:\Modules\SccmOfflineUpgrade\SccmOfflineUpgrade.psd1" -Force
+Usage Scenarios (End-to-End Flow)
+ 5.1) Offline Network: Prepare & Create Package
+ 5.2) Online Network: Connect & Download & Package
+ 5.3) Offline Network: Import & (Optional) Prereq Check & (Optional) Start Upgrade
 
-Not: ConfigMgr cmdlet’lerini kullanacaksanız SCCM konsolunun “Connect via Windows PowerShell” kısayolunu 
-kullanmanız veya ConfigurationManager modülünün yüklü olması gerekir.
+Logging and Outputs
 
---------------------------------------------------------------------------------
-4) KOMUTLAR (CMDLET’LER) VE PARAMETRELERİ
---------------------------------------------------------------------------------
+Error Handling and Troubleshooting
 
+FAQ
+
+Release Notes
+
+1) OVERVIEW
+This module automates the offline update method used to upgrade Microsoft Configuration Manager (SCCM/ConfigMgr) sites that have no internet access. The flow is:
+
+PREPARE: On the offline SCCM server, generate usage data and prepare the transfer package.
+
+CONNECT: On an internet-connected system, send the usage data to Microsoft and download update packages.
+
+IMPORT: On the offline SCCM server, import the downloaded packages; optionally run a prereq check and trigger the upgrade.
+
+The module can also:
+
+Install and set the Service Connection Point (SCP) role to Offline/Online mode.
+
+Log all steps in detail.
+
+Record files that fail to download into a separate log file.
+
+Automatically ZIP transfer and download packages.
+
+2) PREREQUISITES
+SCCM Console and/or ConfigMgr PowerShell module (for ConfigMgr cmdlets).
+
+ServiceConnectionTool.exe (from the CD.Latest folder of the same version). The module attempts to auto-locate it.
+
+Administrative privileges on the offline network side.
+
+Internet access on the online network side; proxy details if required.
+
+.NET Framework and required dependencies (per ServiceConnectionTool requirements).
+
+Sufficient disk space (update downloads may be several GB).
+
+3) INSTALLATION AND MODULE LOADING
+Copy the module files into a folder (e.g., C:\Modules\SccmOfflineUpgrade\).
+
+(Optional) Place the module manifest file (SccmOfflineUpgrade.psd1) in the same folder.
+
+In PowerShell:
+
+powershell
+Copy
+Edit
+Import-Module "C:\Modules\SccmOfflineUpgrade\SccmOfflineUpgrade.psd1" -Force
+Note: If you plan to use ConfigMgr cmdlets, either use the SCCM console shortcut “Connect via Windows PowerShell” or ensure the ConfigurationManager module is loaded.
+
+4) COMMANDS (CMDLETS) AND PARAMETERS
 4.1) Install-SccmServiceConnectionPoint
----------------------------------------
-Açıklama: Service Connection Point (SCP) rolünü kurar veya mevcut ise modunu değiştirir (Offline/Online).
+Description: Installs the Service Connection Point (SCP) role or changes its mode (Offline/Online).
 
-Sözdizimi:
-  Install-SccmServiceConnectionPoint -SiteCode <String> -SiteSystemServerName <String> [-Mode <Offline|Online>] 
-                                     [-LogPath <String>] [-WhatIf] [-Confirm]
+Syntax:
 
-Parametreler:
-  -SiteCode (Zorunlu)              : SCCM site kodu (örn. ABC).
-  -SiteSystemServerName (Zorunlu)  : SCP rolünün kurulacağı site system sunucu adı (FQDN önerilir).
-  -Mode                            : 'Offline' veya 'Online'. Varsayılan: Offline.
-  -LogPath                         : İşlem log dosyası. Varsayılan: C:\ProgramData\SccmOfflineUpgrade\logs\Install-SCP.log
-  -WhatIf / -Confirm               : Standart güvenlik parametreleri.
+powershell
+Copy
+Edit
+Install-SccmServiceConnectionPoint -SiteCode <String> -SiteSystemServerName <String> [-Mode <Offline|Online>] [-LogPath <String>] [-WhatIf] [-Confirm]
+Parameters:
 
-Çıktı:
-  Yok. Başarı/hata detayları log’a yazılır.
+-SiteCode (Required): SCCM site code (e.g., ABC).
 
-Örnek:
-  Install-SccmServiceConnectionPoint -SiteCode "ABC" -SiteSystemServerName "SCCM-PRI.contoso.local" -Mode Offline -Verbose
+-SiteSystemServerName (Required): Site system server name where the SCP role will be installed (FQDN recommended).
 
+-Mode: 'Offline' or 'Online'. Default: Offline.
 
+-LogPath: Log file path. Default: C:\ProgramData\SccmOfflineUpgrade\logs\Install-SCP.log
+
+-WhatIf / -Confirm: Standard safety parameters.
+
+Output: None. Logs success/failure details.
+
+Example:
+
+powershell
+Copy
+Edit
+Install-SccmServiceConnectionPoint -SiteCode "ABC" -SiteSystemServerName "SCCM-PRI.contoso.local" -Mode Offline -Verbose
 4.2) Export-SccmOfflinePackage
-------------------------------
-Açıklama: Kapalı ağdaki SCCM sunucusunda PREPARE adımını çalıştırır, ServiceConnectionTool klasörü ve UsageData.cab’i 
-          içeren bir aktarım ZIP’i üretir.
+Description: Runs the PREPARE step on the offline SCCM server, producing a transfer ZIP containing the ServiceConnectionTool folder and UsageData.cab.
 
-Sözdizimi:
-  Export-SccmOfflinePackage -OutputZip <String> [-ServiceConnectionToolPath <String>] 
-                            [-StagingRoot <String>] [-UsageDataCabName <String>] [-LogPath <String>]
+Syntax:
 
-Parametreler:
-  -OutputZip (Zorunlu)             : Dışarı taşınacak ZIP dosyasının tam yolu.
-  -ServiceConnectionToolPath       : ServiceConnectionTool klasörü. Boş kalırsa CD.Latest’ten otomatik bulunur.
-  -StagingRoot                     : Geçici çalışma klasörü. Varsayılan: %ProgramData%\SccmOfflineUpgrade\staging
-  -UsageDataCabName                : Usage data CAB dosyası adı. Varsayılan: UsageData.cab
-  -LogPath                         : İşlem log dosyası. Varsayılan: %ProgramData%\SccmOfflineUpgrade\logs\Export-SccmOfflinePackage.log
+powershell
+Copy
+Edit
+Export-SccmOfflinePackage -OutputZip <String> [-ServiceConnectionToolPath <String>] [-StagingRoot <String>] [-UsageDataCabName <String>] [-LogPath <String>]
+Parameters:
 
-Çıktı:
-  -OutputZip yolunu string olarak döndürür.
+-OutputZip (Required): Full path of the ZIP file to be transferred.
 
-Örnek:
-  $zip1 = Export-SccmOfflinePackage -OutputZip "D:\XFER\CM-UsageData-And-Tool.zip" -Verbose
+-ServiceConnectionToolPath: Path to the ServiceConnectionTool folder. If omitted, auto-locates from CD.Latest.
 
+-StagingRoot: Temporary working folder. Default: %ProgramData%\SccmOfflineUpgrade\staging
 
+-UsageDataCabName: Name of the usage data CAB file. Default: UsageData.cab
+
+-LogPath: Log file path. Default: %ProgramData%\SccmOfflineUpgrade\logs\Export-SccmOfflinePackage.log
+
+Output: Returns the -OutputZip path as a string.
+
+Example:
+
+powershell
+Copy
+Edit
+$zip1 = Export-SccmOfflinePackage -OutputZip "D:\XFER\CM-UsageData-And-Tool.zip" -Verbose
 4.3) Invoke-SccmOnlineDownload
-------------------------------
-Açıklama: Açık ağda CONNECT adımını çalıştırır. Kapalı ağdan gelen ZIP’i açar, usage data’yı yükler, güncellemeleri indirir,
-          hatalı indirmeleri ayrı log’a yazar ve tüm indirmeleri tek bir ZIP haline getirir.
+Description: Runs the CONNECT step on an internet-connected machine. Extracts the offline ZIP, uploads usage data, downloads updates, logs failed downloads separately, and packages all updates into one ZIP.
 
-Sözdizimi:
-  Invoke-SccmOnlineDownload -InputZip <String> -DownloadOutput <String> -OutputZip <String> 
-                            [-Proxy <String>] [-LogPath <String>] [-ErrorLogPath <String>]
+Syntax:
 
-Parametreler:
-  -InputZip (Zorunlu)              : Kapalı ağdan taşınan ilk paket (Export-SccmOfflinePackage çıktısı).
-  -DownloadOutput (Zorunlu)        : Güncellemelerin indirileceği klasör.
-  -OutputZip (Zorunlu)             : Geri kapalı ağa taşınacak ZIP dosyası.
-  -Proxy                           : Gerekirse proxy (örn. http://user:pass@proxy:8080).
-  -LogPath                         : İşlem log dosyası. Varsayılan: %ProgramData%\SccmOfflineUpgrade\logs\Invoke-SccmOnlineDownload.log
-  -ErrorLogPath                    : Hatalı indirmeler için ayrı log. Varsayılan: %ProgramData%\SccmOfflineUpgrade\logs\OnlineDownloadErrors.log
+powershell
+Copy
+Edit
+Invoke-SccmOnlineDownload -InputZip <String> -DownloadOutput <String> -OutputZip <String> [-Proxy <String>] [-LogPath <String>] [-ErrorLogPath <String>]
+Parameters:
 
-Çıktı:
-  [pscustomobject] @{ OutputZip = <String>; ErrorLog = <String|null> }
+-InputZip (Required): Package from the offline network (output of Export-SccmOfflinePackage).
 
-Örnek:
-  $result = Invoke-SccmOnlineDownload `
-              -InputZip "E:\CarryIn\CM-UsageData-And-Tool.zip" `
-              -DownloadOutput "E:\CM\UpdatePacks" `
-              -OutputZip "E:\CarryBack\CM-UpdatePacks.zip" `
-              -Verbose
-  if ($result.ErrorLog) { Write-Host "Hata detayları: $($result.ErrorLog)" }
+-DownloadOutput (Required): Folder where updates will be downloaded.
 
+-OutputZip (Required): ZIP file to return to the offline network.
 
+-Proxy: Proxy if required (e.g., http://user:pass@proxy:8080).
+
+-LogPath: Log file path. Default: %ProgramData%\SccmOfflineUpgrade\logs\Invoke-SccmOnlineDownload.log
+
+-ErrorLogPath: Log for failed downloads. Default: %ProgramData%\SccmOfflineUpgrade\logs\OnlineDownloadErrors.log
+
+Output:
+[pscustomobject] @{ OutputZip = <String>; ErrorLog = <String|null> }
+
+Example:
+
+powershell
+Copy
+Edit
+$result = Invoke-SccmOnlineDownload `
+    -InputZip "E:\CarryIn\CM-UsageData-And-Tool.zip" `
+    -DownloadOutput "E:\CM\UpdatePacks" `
+    -OutputZip "E:\CarryBack\CM-UpdatePacks.zip" `
+    -Verbose
+if ($result.ErrorLog) { Write-Host "Error details: $($result.ErrorLog)" }
 4.4) Import-SccmOfflineUpdates
-------------------------------
-Açıklama: Kapalı ağda IMPORT adımını çalıştırır. İndirilen paketleri SCCM’e import eder; istenirse prereq check (LOCAL) ve 
-          (destek dışı) upgrade tetikleme denemesi yapar.
+Description: Runs the IMPORT step on the offline SCCM server. Imports the downloaded packages; optionally runs a local prereq check and attempts a (best-effort) upgrade trigger.
 
-Sözdizimi:
-  Import-SccmOfflineUpdates -InputZip <String> [-ServiceConnectionToolPath <String>] [-ExtractTo <String>] 
-                            [-RunPrereqCheck] [-CdLatestRoot <String>] [-TryStartUpgrade] [-SiteCode <String>] 
-                            [-LogPath <String>]
+Syntax:
 
-Parametreler:
-  -InputZip (Zorunlu)              : Açık ağdan dönen güncellemeleri içeren ZIP (Invoke-SccmOnlineDownload çıktısı).
-  -ServiceConnectionToolPath       : ServiceConnectionTool klasörü. Boş kalırsa CD.Latest’ten otomatik bulunur.
-  -ExtractTo                       : ZIP’in açılacağı klasör. Varsayılan: %ProgramData%\SccmOfflineUpgrade\import
-  -RunPrereqCheck                  : CD.Latest\...\prereqchk.exe /LOCAL çalıştırır (bulunursa).
-  -CdLatestRoot                    : prereqchk.exe aramak için CD.Latest kökü. Boşsa Setup’tan türetilir.
-  -TryStartUpgrade                 : “Available” durumdaki en yeni in-console update’i WMI tabanlı *best-effort* tetikler.
-  -SiteCode                        : TryStartUpgrade için gerekli (örn. ABC).
-  -LogPath                         : İşlem log dosyası. Varsayılan: %ProgramData%\SccmOfflineUpgrade\logs\Import-SccmOfflineUpdates.log
+powershell
+Copy
+Edit
+Import-SccmOfflineUpdates -InputZip <String> [-ServiceConnectionToolPath <String>] [-ExtractTo <String>] [-RunPrereqCheck] [-CdLatestRoot <String>] [-TryStartUpgrade] [-SiteCode <String>] [-LogPath <String>]
+Parameters:
 
-Çıktı:
-  Yok. Başarı/hata detayları log’a yazılır.
+-InputZip (Required): ZIP containing updates from the online network (Invoke-SccmOnlineDownload output).
 
-Örnek:
-  Import-SccmOfflineUpdates `
+-ServiceConnectionToolPath: Path to ServiceConnectionTool folder. If omitted, auto-locates from CD.Latest.
+
+-ExtractTo: Extraction folder. Default: %ProgramData%\SccmOfflineUpgrade\import
+
+-RunPrereqCheck: Runs prereqchk.exe /LOCAL from CD.Latest if found.
+
+-CdLatestRoot: CD.Latest root path for prereqchk.exe. Defaults from setup registry.
+
+-TryStartUpgrade: Attempts to trigger the newest “Available” in-console update via WMI (best-effort).
+
+-SiteCode: Required for -TryStartUpgrade.
+
+-LogPath: Log file path. Default: %ProgramData%\SccmOfflineUpgrade\logs\Import-SccmOfflineUpdates.log
+
+Output: None. Logs success/failure details.
+
+Example:
+
+powershell
+Copy
+Edit
+Import-SccmOfflineUpdates `
     -InputZip "D:\CarryBack\CM-UpdatePacks.zip" `
     -RunPrereqCheck `
     -TryStartUpgrade `
     -SiteCode "ABC" `
     -Verbose
+5) USAGE SCENARIOS (END-TO-END FLOW)
+5.1) Offline Network: Prepare & Create Package
 
---------------------------------------------------------------------------------
-5) KULLANIM SENARYOLARI (UÇTAN UCA AKIŞ)
---------------------------------------------------------------------------------
+(Optional) Install SCP role and set to Offline mode:
 
-5.1) Kapalı Ağ: Prepare & Paket Üret
-------------------------------------
-1) (Opsiyonel) SCP rolünü kur ve Offline moda al:
-   Install-SccmServiceConnectionPoint -SiteCode "ABC" -SiteSystemServerName "SCCM-PRI.contoso.local" -Mode Offline -Verbose
+powershell
+Copy
+Edit
+Install-SccmServiceConnectionPoint -SiteCode "ABC" -SiteSystemServerName "SCCM-PRI.contoso.local" -Mode Offline -Verbose
+Prepare and create package:
 
-2) PREPARE ve paket oluştur:
-   $zip1 = Export-SccmOfflinePackage -OutputZip "D:\XFER\CM-UsageData-And-Tool.zip" -Verbose
+powershell
+Copy
+Edit
+$zip1 = Export-SccmOfflinePackage -OutputZip "D:\XFER\CM-UsageData-And-Tool.zip" -Verbose
+Transfer the ZIP to the online network.
 
-3) Oluşan ZIP’i açık ağa taşıyın.
+5.2) Online Network: Connect & Download & Package
 
-5.2) Açık Ağ: Connect & İndir & Paketle
----------------------------------------
-1) İndirme ve paketleme:
-   $result = Invoke-SccmOnlineDownload `
-               -InputZip "E:\CarryIn\CM-UsageData-And-Tool.zip" `
-               -DownloadOutput "E:\CM\UpdatePacks" `
-               -OutputZip "E:\CarryBack\CM-UpdatePacks.zip" `
-               -Verbose
+Download and package:
 
-2) $result.ErrorLog doluysa hataları inceleyin.
-3) Oluşan ZIP’i tekrar kapalı ağa taşıyın.
+powershell
+Copy
+Edit
+$result = Invoke-SccmOnlineDownload `
+    -InputZip "E:\CarryIn\CM-UsageData-And-Tool.zip" `
+    -DownloadOutput "E:\CM\UpdatePacks" `
+    -OutputZip "E:\CarryBack\CM-UpdatePacks.zip" `
+    -Verbose
+If $result.ErrorLog is populated, review the errors.
 
-5.3) Kapalı Ağ: Import & (Opsiyonel) Prereq & (Opsiyonel) Upgrade
------------------------------------------------------------------
-1) IMPORT + prereq check + (best-effort) upgrade tetikle:
-   Import-SccmOfflineUpdates `
-     -InputZip "D:\CarryBack\CM-UpdatePacks.zip" `
-     -RunPrereqCheck `
-     -TryStartUpgrade `
-     -SiteCode "ABC" `
-     -Verbose
+Transfer the ZIP back to the offline network.
 
-2) Monitoring > Updates and Servicing Status ve aşağıdaki logları takip edin:
-   - CMUpdate.log
-   - ConfigMgrPrereq.log
+5.3) Offline Network: Import & (Optional) Prereq & (Optional) Upgrade
 
---------------------------------------------------------------------------------
-6) LOGLAMA VE ÇIKTILAR
---------------------------------------------------------------------------------
-Varsayılan log klasörü: C:\ProgramData\SccmOfflineUpgrade\logs\
+Import, run prereq check, and attempt (best-effort) upgrade:
 
-- Install-SCP.log                    : SCP rol + mod işlemleri
-- Export-SccmOfflinePackage.log      : PREPARE + paket üretim
-- Invoke-SccmOnlineDownload.log      : CONNECT + indirme + paketleme
-- OnlineDownloadErrors.log           : Hatalı indirmeler (ayrı dosya)
-- Import-SccmOfflineUpdates.log      : IMPORT + (opsiyonel) prereq + (opsiyonel) upgrade tetik
+powershell
+Copy
+Edit
+Import-SccmOfflineUpdates `
+    -InputZip "D:\CarryBack\CM-UpdatePacks.zip" `
+    -RunPrereqCheck `
+    -TryStartUpgrade `
+    -SiteCode "ABC" `
+    -Verbose
+Monitor:
 
-ZIP Çıktıları:
-- CM-UsageData-And-Tool.zip          : Kapalı ağdan açık ağa taşınacak ilk paket
-- CM-UpdatePacks.zip                 : Açık ağdan kapalı ağa geri taşınacak indirme paketi
+Monitoring > Updates and Servicing Status
 
---------------------------------------------------------------------------------
-7) HATA YÖNETİMİ VE SORUN GİDERME
---------------------------------------------------------------------------------
-- ServiceConnectionTool.exe bulunamadı:
-  * CD.Latest dizini doğru mu? Gerekirse -ServiceConnectionToolPath parametresi ile tam yolu verin.
-- Indirme başarısız/hatalı dosyalar:
-  * OnlineDownloadErrors.log dosyasını kontrol edin. Proxy gereksinimini değerlendirin (-Proxy).
-  * Disk alanını ve antivirüs/IDS engellemelerini kontrol edin.
-- Prereq check uyarıları:
-  * ConfigMgrPrereq.log ve prereqchk çıktısını inceleyin. Eksik roller/özellikler için düzeltme yapın.
-- Upgrade tetiklenmiyor:
-  * TryStartUpgrade best-effort bir yaklaşımdır (resmi cmdlet değildir). GUI’den “Install Update Pack” ile deneyin.
-  * CMUpdate.log ve Updates and Servicing Status’ı inceleyin.
+Logs: CMUpdate.log, ConfigMgrPrereq.log
 
---------------------------------------------------------------------------------
-8) SSS (Sık Sorulan Sorular)
---------------------------------------------------------------------------------
-S: Modül ConfigMgr cmdlet’lerine muhtaç mı?
-C: SCP rol yönetimi ve otomatik upgrade denemesi için evet. PREPARE/CONNECT/IMPORT ise ServiceConnectionTool ile çalışır.
+6) LOGGING AND OUTPUTS
+Default log directory: C:\ProgramData\SccmOfflineUpgrade\logs\
 
-S: Proxy arkasındayım, nasıl ayarlayacağım?
-C: Invoke-SccmOnlineDownload içinde -Proxy parametresine uygun formatta verin (örn. http://user:pass@proxy:8080).
+Install-SCP.log: SCP role + mode operations
 
-S: Paket boyutları çok büyük, ne yapabilirim?
-C: DownloadOutput diskini büyük seçin; ZIP aşamasında da yeterli alan bırakın.
+Export-SccmOfflinePackage.log: PREPARE + package creation
 
-S: Hangi logları takip etmeliyim?
-C: Modül loglarına ek olarak SCCM logları: CMUpdate.log, ConfigMgrPrereq.log, dmpdownloader.log, hman.log vb.
+Invoke-SccmOnlineDownload.log: CONNECT + download + packaging
 
---------------------------------------------------------------------------------
-9) SÜRÜM NOTLARI
---------------------------------------------------------------------------------
+OnlineDownloadErrors.log: Failed downloads (separate)
+
+Import-SccmOfflineUpdates.log: IMPORT + (optional) prereq + (optional) upgrade
+
+ZIP Outputs:
+
+CM-UsageData-And-Tool.zip: Package to transfer from offline to online network
+
+CM-UpdatePacks.zip: Package to transfer from online back to offline network
+
+7) ERROR HANDLING AND TROUBLESHOOTING
+ServiceConnectionTool.exe not found:
+
+Verify CD.Latest directory is correct. Use -ServiceConnectionToolPath if needed.
+
+Download failed / bad files:
+
+Check OnlineDownloadErrors.log.
+
+Consider proxy settings (-Proxy).
+
+Check disk space and AV/IDS blocking.
+
+Prereq check warnings:
+
+Review ConfigMgrPrereq.log and prereqchk output. Fix missing roles/features.
+
+Upgrade not triggering:
+
+TryStartUpgrade is best-effort (not an official cmdlet). Use GUI “Install Update Pack” as fallback.
+
+Review CMUpdate.log and Updates and Servicing Status.
+
+8) FAQ
+Q: Does the module depend on ConfigMgr cmdlets?
+A: Yes, for SCP role management and auto-upgrade attempt. PREPARE/CONNECT/IMPORT works via ServiceConnectionTool.
+
+Q: I’m behind a proxy, how do I configure it?
+A: Use the -Proxy parameter in Invoke-SccmOnlineDownload (e.g., http://user:pass@proxy:8080).
+
+Q: The packages are huge, what can I do?
+A: Ensure the DownloadOutput drive has ample space; keep extra space for ZIP creation.
+
+Q: Which logs should I watch?
+A: Module logs plus SCCM logs: CMUpdate.log, ConfigMgrPrereq.log, dmpdownloader.log, hman.log.
+
+9) RELEASE NOTES
 v1.0.0
-- İlk sürüm: PREPARE/CONNECT/IMPORT akışları; SCP rol yönetimi; indirme hatalarını ayrı loglama;
-  ZIP paketleme; prereq check ve best-effort upgrade tetikleme.
+
+Initial release: PREPARE/CONNECT/IMPORT flows; SCP role management; separate logging of failed downloads; ZIP packaging; prereq check; best-effort upgrade trigger.

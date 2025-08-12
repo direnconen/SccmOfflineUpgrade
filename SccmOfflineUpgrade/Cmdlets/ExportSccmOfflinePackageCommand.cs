@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Linq;
 using System.Management.Automation;
 
 namespace SccmOfflineUpgrade
@@ -54,8 +55,24 @@ namespace SccmOfflineUpgrade
                 var cabDest = Path.Combine(xTransfer, UsageDataCabName);
                 Logger.Write(LogPath, $"Prepare (usage data) -> {cabDest}");
                 var args = $"-prepare -usagedatadest \"{cabDest}\"";
-                var res = ProcessRunner.Run(exe, args);
-                if (res.ExitCode != 0 || !File.Exists(cabDest))
+
+                // Çalışma dizinini xTool yap
+                var res = ProcessRunner.Run(Path.Combine(xTool, "ServiceConnectionTool.exe"), args, 0, xTool);
+
+                // Başarısızsa veya cab beklenen yerde yoksa, fallback tara
+                if (!File.Exists(cabDest))
+                {
+                    var found = Directory.EnumerateFiles(stage, "*.cab", SearchOption.AllDirectories).FirstOrDefault();
+                    if (!string.IsNullOrEmpty(found))
+                    {
+                        Logger.Write(LogPath, $"CAB not at expected path. Found: {found}. Moving to {cabDest}");
+                        Directory.CreateDirectory(Path.GetDirectoryName(cabDest)!);
+                        if (File.Exists(cabDest)) File.Delete(cabDest);
+                        File.Move(found, cabDest);
+                    }
+                }
+
+                if (!File.Exists(cabDest))
                 {
                     Logger.Write(LogPath, res.StdOut + Environment.NewLine + res.StdErr, LogLevel.ERROR);
                     throw new Exception("Prepare step failed or CAB not created.");

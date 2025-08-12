@@ -13,7 +13,7 @@ namespace SccmOfflineUpgrade
 
     internal static class ProcessRunner
     {
-        public static ProcessResult Run(string filePath, string arguments, int timeoutSeconds = 0)
+        public static ProcessResult Run(string filePath, string arguments, int timeoutSeconds = 0, string? workingDirectory = null)
         {
             var psi = new ProcessStartInfo
             {
@@ -24,6 +24,8 @@ namespace SccmOfflineUpgrade
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
+            if (!string.IsNullOrWhiteSpace(workingDirectory))
+                psi.WorkingDirectory = workingDirectory;
 
             using var p = new Process { StartInfo = psi };
             var sbOut = new StringBuilder();
