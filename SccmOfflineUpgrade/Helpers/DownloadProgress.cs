@@ -2,12 +2,17 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 
 namespace SccmOfflineUpgrade
 {
     internal sealed class DownloadProgress
     {
+        private sealed class StabilityInfo
+        {
+            public long LastSize;
+            public int StableCount;
+        }
+
         // Tahmini toplam byte (stdout'tan parse edersek dolar)
         public long? ExpectedTotalBytes { get; set; }
 
@@ -17,8 +22,8 @@ namespace SccmOfflineUpgrade
         // Tamamlanan dosyalar (loglandı)
         private readonly HashSet<string> _completedLogged = new(StringComparer.OrdinalIgnoreCase);
 
-        // Stabilite takibi: path -> (lastSize, stableCount)
-        private readonly ConcurrentDictionary<string, (long lastSize, int stableCount)> _stability =
+        // Stabilite takibi: path -> StabilityInfo
+        private readonly ConcurrentDictionary<string, StabilityInfo> _stability =
             new(StringComparer.OrdinalIgnoreCase);
 
         // Tamamlandı sayacı
@@ -35,26 +40,25 @@ namespace SccmOfflineUpgrade
                     var fi = new FileInfo(file);
                     sum += fi.Length;
 
-                    var key = fi.FullName;
-                    var tuple = _stability.GetOrAdd(key, _ => (fi.Length, 0));
+                    var info = _stability.GetOrAdd(fi.FullName, _ => new StabilityInfo { LastSize = fi.Length, StableCount = 0 });
 
-                    if (tuple.lastSize == fi.Length)
+                    if (info.LastSize == fi.Length)
                     {
                         // boyut değişmedi: stabil sayaç ++
-                        var next = (fi.Length, Math.Min(tuple.stableCount + 1, 10));
-                        _stability[key] = next;
+                        info.StableCount = Math.Min(info.StableCount + 1, 10);
 
                         // 2 ardışık ölçüm stabil ise ve daha önce loglanmadıysa -> tamamlandı
-                        if (next.stableCount >= 2 && !_completedLogged.Contains(key))
+                        if (info.StableCount >= 2 && !_completedLogged.Contains(fi.FullName))
                         {
-                            _completedLogged.Add(key);
-                            onFileCompleted?.Invoke(key, fi.Length);
+                            _completedLogged.Add(fi.FullName);
+                            onFileCompleted?.Invoke(fi.FullName, fi.Length);
                         }
                     }
                     else
                     {
                         // boyut değişti: sayaç sıfırla
-                        _stability[key] = (fi.Length, 0);
+                        info.LastSize = fi.Length;
+                        info.StableCount = 0;
                     }
                 }
                 catch
