@@ -1,8 +1,11 @@
 SccmOfflineUpgrade PowerShell Module
 ------------------------------------
 
-Version: 1.0.5
+Version 1.0.6 – 2025-08-12
 Author: Arksoft Bilisim
+
+[New Features]
+- Module DLL digitally signed to ensure integrity and authenticity.
 
 Description:
 This PowerShell module provides cmdlets to export, download, and import SCCM upgrade packages in environments with no direct internet access (offline/air-gapped SCCM scenarios).
@@ -75,6 +78,12 @@ Usage Scenario – Full Offline Upgrade
 
 Full Change Log
 ===============
+Version 1.0.6 – 2025-08-12
+[New Features]
+- Module DLL digitally signed to ensure integrity and authenticity.
+
+[Improvements]
+- Security enhancement by providing signed binary verification.
 
 Version 1.0.5 – 2025-08-12
 [New Features]
